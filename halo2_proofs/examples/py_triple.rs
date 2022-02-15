@@ -34,20 +34,12 @@ use std::marker::PhantomData;
 
 use halo2_proofs::{
     arithmetic::FieldExt,
-    circuit::{Cell, Chip, Layouter, SimpleFloorPlanner},
+    circuit::{AssignedCell, Chip, Layouter, SimpleFloorPlanner},
     dev::MockProver,
     pasta::Fp,
     plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Selector},
     poly::Rotation,
 };
-
-// A value that has been allocated in the constraint system.
-struct Alloc<F> {
-    cell: Cell,
-    // Must be `Option` because parameter generation will not assign values within the constraint
-    // system.
-    value: Option<F>,
-}
 
 #[derive(Debug)]
 struct MyChip<F> {
@@ -166,7 +158,7 @@ impl<F: FieldExt> MyChip<F> {
         layouter: &mut impl Layouter<F>,
         a: Option<F>,
         b: Option<F>,
-    ) -> Result<(Alloc<F>, Alloc<F>), Error> {
+    ) -> Result<(AssignedCell<F, F>, AssignedCell<F, F>), Error> {
         layouter.assign_region(
             || "load private inputs",
             |mut region| {
@@ -186,15 +178,7 @@ impl<F: FieldExt> MyChip<F> {
                 // Note that no arithmetic is performed here, all we are doing is allocating the
                 // initial private wire values (i.e. private values which are not the output of any
                 // gate), thus there is no selector enabled in this row.
-                let a_alloc = Alloc {
-                    cell: a_cell.cell(),
-                    value: a,
-                };
-                let b_alloc = Alloc {
-                    cell: b_cell.cell(),
-                    value: b,
-                };
-                Ok((a_alloc, b_alloc))
+                Ok((a_cell, b_cell))
             },
         )
     }
@@ -205,23 +189,18 @@ impl<F: FieldExt> MyChip<F> {
         &self,
         layouter: &mut impl Layouter<F>,
         c: Option<F>,
-    ) -> Result<Alloc<F>, Error> {
+    ) -> Result<AssignedCell<F, F>, Error> {
         layouter.assign_region(
             || "expose public input",
             |mut region| {
                 let row_offset = 0;
                 self.config.s_pub.enable(&mut region, row_offset)?;
-                let l_cell = region.assign_advice(
+                region.assign_advice(
                     || "public input advice",
                     self.config.l_col,
                     row_offset,
                     || c.ok_or(Error::Synthesis),
-                )?;
-                let c_alloc = Alloc {
-                    cell: l_cell.cell(),
-                    value: c,
-                };
-                Ok(c_alloc)
+                )
             },
         )
     }
@@ -233,42 +212,24 @@ impl<F: FieldExt> MyChip<F> {
     fn square(
         &self,
         layouter: &mut impl Layouter<F>,
-        prev_alloc: Alloc<F>,
-    ) -> Result<Alloc<F>, Error> {
-        let squared_value = prev_alloc.value.map(|x| x * x);
+        prev_alloc: AssignedCell<F, F>,
+    ) -> Result<AssignedCell<F, F>, Error> {
+        let squared_value = prev_alloc.value().map(|x| *x * x);
         layouter.assign_region(
             || "square",
             |mut region| {
                 let row_offset = 0;
                 self.config.s_mul.enable(&mut region, row_offset)?;
 
-                let l_cell = region.assign_advice(
-                    || "l",
-                    self.config.l_col,
-                    row_offset,
-                    || prev_alloc.value.ok_or(Error::Synthesis),
-                )?;
-                let r_cell = region.assign_advice(
-                    || "r",
-                    self.config.r_col,
-                    row_offset,
-                    || prev_alloc.value.ok_or(Error::Synthesis),
-                )?;
+                let _ = prev_alloc.copy_advice(|| "l", &mut region, self.config.l_col, row_offset);
+                let _ = prev_alloc.copy_advice(|| "r", &mut region, self.config.r_col, row_offset);
 
-                region.constrain_equal(prev_alloc.cell, l_cell.cell())?;
-                region.constrain_equal(prev_alloc.cell, r_cell.cell())?;
-
-                let o_cell = region.assign_advice(
+                region.assign_advice(
                     || "l * r",
                     self.config.o_col,
                     row_offset,
                     || squared_value.ok_or(Error::Synthesis),
-                )?;
-                let squared_alloc = Alloc {
-                    cell: o_cell.cell(),
-                    value: squared_value,
-                };
-                Ok(squared_alloc)
+                )
             },
         )
     }
@@ -283,9 +244,9 @@ impl<F: FieldExt> MyChip<F> {
     fn constrained_add(
         &self,
         layouter: &mut impl Layouter<F>,
-        l_in_alloc: Alloc<F>,
-        r_in_alloc: Alloc<F>,
-        o_in_alloc: Alloc<F>,
+        l_in_alloc: AssignedCell<F, F>,
+        r_in_alloc: AssignedCell<F, F>,
+        o_in_alloc: AssignedCell<F, F>,
     ) -> Result<(), Error> {
         layouter.assign_region(
             || "constrained add",
@@ -293,28 +254,12 @@ impl<F: FieldExt> MyChip<F> {
                 let row_offset = 0;
                 self.config.s_add.enable(&mut region, row_offset)?;
 
-                let l_cell = region.assign_advice(
-                    || "l",
-                    self.config.l_col,
-                    row_offset,
-                    || l_in_alloc.value.ok_or(Error::Synthesis),
-                )?;
-                let r_cell = region.assign_advice(
-                    || "r",
-                    self.config.r_col,
-                    row_offset,
-                    || r_in_alloc.value.ok_or(Error::Synthesis),
-                )?;
-                let o_cell = region.assign_advice(
-                    || "o",
-                    self.config.o_col,
-                    row_offset,
-                    || o_in_alloc.value.ok_or(Error::Synthesis),
-                )?;
-
-                region.constrain_equal(l_in_alloc.cell, l_cell.cell())?;
-                region.constrain_equal(r_in_alloc.cell, r_cell.cell())?;
-                region.constrain_equal(o_in_alloc.cell, o_cell.cell())?;
+                let _ =
+                    l_in_alloc.copy_advice(|| "l", &mut region, self.config.l_col, row_offset)?;
+                let _ =
+                    r_in_alloc.copy_advice(|| "r", &mut region, self.config.r_col, row_offset)?;
+                let _ =
+                    o_in_alloc.copy_advice(|| "o", &mut region, self.config.o_col, row_offset)?;
 
                 Ok(())
             },
