@@ -37,7 +37,7 @@ use halo2_proofs::{
     circuit::{AssignedCell, Chip, Layouter, SimpleFloorPlanner},
     dev::MockProver,
     pasta::Fp,
-    plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Selector},
+    plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance, Selector},
     poly::Rotation,
 };
 
@@ -52,6 +52,7 @@ struct MyChipConfig {
     l_col: Column<Advice>,
     r_col: Column<Advice>,
     o_col: Column<Advice>,
+    pub_col: Column<Instance>,
     s_add: Selector,
     s_mul: Selector,
     s_pub: Selector,
@@ -92,6 +93,7 @@ impl<F: FieldExt> MyChip<F> {
         // column's values will be provided by the verifier, i.e. the chip will never assign values
         // into `pub_col`; the selector is used only to defining gates.
         let pub_col = cs.instance_column();
+        cs.enable_equality(pub_col);
 
         let s_add = cs.selector();
         let s_mul = cs.selector();
@@ -129,14 +131,15 @@ impl<F: FieldExt> MyChip<F> {
 
         // Define the public input gate.
         //
-        // | l_col | pub_col | s_pub |
+        // | l_col |  r_col  | s_pub |
         // |-------|---------|-------|
         // |   l   |    pi   | s_pub |
         //
         // Constraint: s_pub*l = s_pub*pi
         cs.create_gate("public input", |cs| {
             let l = cs.query_advice(l_col, Rotation::cur());
-            let pi = cs.query_instance(pub_col, Rotation::cur());
+            // Copy pi value from pub_col to r_col.
+            let pi = cs.query_advice(r_col, Rotation::cur());
             let s_pub = cs.query_selector(s_pub);
             vec![s_pub * (l - pi)]
         });
@@ -145,6 +148,7 @@ impl<F: FieldExt> MyChip<F> {
             l_col,
             r_col,
             o_col,
+            pub_col,
             s_add,
             s_mul,
             s_pub,
@@ -200,6 +204,13 @@ impl<F: FieldExt> MyChip<F> {
                     self.config.l_col,
                     row_offset,
                     || c.ok_or(Error::Synthesis),
+                )?;
+                region.assign_advice_from_instance(
+                    || "copy pi",
+                    self.config.pub_col,
+                    1,
+                    self.config.r_col,
+                    row_offset,
                 )
             },
         )
@@ -331,24 +342,39 @@ fn main() {
         c: Some(Fp::from(PUB_INPUT)),
     };
 
+    // Create the area you want to draw on.
+    // Use SVGBackend if you want to render to .svg instead.
+    use plotters::prelude::*;
+    let root = BitMapBackend::new("layout.png", (1024, 768)).into_drawing_area();
+    root.fill(&WHITE).unwrap();
+    let root = root
+        .titled("Example Circuit Layout", ("sans-serif", 60))
+        .unwrap();
+
+    halo2_proofs::dev::CircuitLayout::default()
+        // You can optionally render only a section of the circuit.
+        // .view_width(0..2)
+        // .view_height(0..16)
+        // You can hide labels, which can be useful with smaller areas.
+        // .show_labels(false)
+        // Render the circuit onto your area!
+        // The first argument is the size parameter for the circuit.
+        .render(k, &circuit, &root)
+        .unwrap();
+
     // Assert that the constraint system is satisfied.
     let prover = MockProver::run(k, &circuit, vec![pub_inputs.clone()]).unwrap();
-    let errors = prover.verify().unwrap_err();
+    assert!(prover.verify().is_ok());
 
-    // this is failing so let's check the errors
-    for e in errors {
-        println!("{}", e);
-    }
+    // Assert that changing the public inputs results in the constraint system becoming unsatisfied.
+    let mut bad_pub_inputs = pub_inputs.clone();
+    bad_pub_inputs[PUB_INPUT_ROW_INDEX] = Fp::from(PUB_INPUT + 1);
+    let prover = MockProver::run(k, &circuit, vec![bad_pub_inputs]).unwrap();
+    assert!(prover.verify().is_err());
 
-    // // Assert that changing the public inputs results in the constraint system becoming unsatisfied.
-    // let mut bad_pub_inputs = pub_inputs.clone();
-    // bad_pub_inputs[PUB_INPUT_ROW_INDEX] = Fp::from(PUB_INPUT + 1);
-    // let prover = MockProver::run(k, &circuit, vec![bad_pub_inputs]).unwrap();
-    // assert!(prover.verify().is_err());
-
-    // // Assert that changing a private input results in the constraint system becoming unsatisfied.
-    // let mut bad_circuit = circuit.clone();
-    // bad_circuit.b = Some(Fp::from(5));
-    // let prover = MockProver::run(k, &bad_circuit, vec![pub_inputs]).unwrap();
-    // assert!(prover.verify().is_err());
+    // Assert that changing a private input results in the constraint system becoming unsatisfied.
+    let mut bad_circuit = circuit.clone();
+    bad_circuit.b = Some(Fp::from(5));
+    let prover = MockProver::run(k, &bad_circuit, vec![pub_inputs]).unwrap();
+    assert!(prover.verify().is_err());
 }
