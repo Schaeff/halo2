@@ -4,9 +4,22 @@
 // - the advice to the second instance
 
 // Imperative pseudocode for this program would be:
+// ```
 // def main(public field a) -> field:
 //    field b = a // assign private to public
 //    return b    // return public
+// ```
+//
+// The expected constraint system is be the following
+// It does not show the constraints (x == PI_0 and PI_1 == x) which are enforced using copy constraints
+// |-----|----------|---------|
+// | row | priv_col | pub_col |
+// |-----|----------|---------|
+// |  0  |    x     |  PI_0   |
+// |  1  |          |  PI_1   |
+// |-----|----------|---------|
+//
+// Todo: the generated layout graph does not match this representation. Why?
 
 const FIRST_PUB_INPUT_ROW_INDEX: usize = 0;
 const SECOND_PUB_INPUT_ROW_INDEX: usize = 1;
@@ -135,6 +148,19 @@ fn main() {
 
     // The prover creates a circuit containing the public and private inputs.
     let circuit = MyCircuit;
+
+    // Create the area you want to draw on.
+    // Use SVGBackend if you want to render to .svg instead.
+    use plotters::prelude::*;
+    let root = BitMapBackend::new("public_input.png", (1024, 768)).into_drawing_area();
+    root.fill(&WHITE).unwrap();
+    let root = root
+        .titled("Simple public input example", ("sans-serif", 60))
+        .unwrap();
+
+    halo2_proofs::dev::CircuitLayout::default()
+        .render::<Fp, _, _>(k, &circuit, &root)
+        .unwrap();
 
     // Assert that the constraint system is satisfied.
     let prover = MockProver::run(k, &circuit, vec![pub_inputs.clone()]).unwrap();
