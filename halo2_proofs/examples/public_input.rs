@@ -35,19 +35,19 @@ use halo2_proofs::{
 };
 
 #[derive(Debug)]
-struct MyChip<F> {
-    config: MyChipConfig,
+struct PublicPassingChip<F> {
+    config: PublicPassingChipConfig,
     marker: PhantomData<F>,
 }
 
 #[derive(Clone, Debug)]
-struct MyChipConfig {
+struct PublicPassingChipConfig {
     priv_col: Column<Advice>,
     pub_col: Column<Instance>,
 }
 
-impl<F: FieldExt> Chip<F> for MyChip<F> {
-    type Config = MyChipConfig;
+impl<F: FieldExt> Chip<F> for PublicPassingChip<F> {
+    type Config = PublicPassingChipConfig;
     type Loaded = ();
 
     fn config(&self) -> &Self::Config {
@@ -59,9 +59,9 @@ impl<F: FieldExt> Chip<F> for MyChip<F> {
     }
 }
 
-impl<F: FieldExt> MyChip<F> {
+impl<F: FieldExt> PublicPassingChip<F> {
     fn new(config: <Self as Chip<F>>::Config) -> Self {
-        MyChip {
+        PublicPassingChip {
             config,
             marker: PhantomData,
         }
@@ -76,7 +76,7 @@ impl<F: FieldExt> MyChip<F> {
         let pub_col = cs.instance_column();
         cs.enable_equality(pub_col);
 
-        MyChipConfig { priv_col, pub_col }
+        PublicPassingChipConfig { priv_col, pub_col }
     }
 
     // Constrain and assign a private cell to the first public input
@@ -114,7 +114,7 @@ struct MyCircuit;
 
 impl<F: FieldExt> Circuit<F> for MyCircuit {
     // Our circuit uses one chip, thus we can reuse the chip's config as the circuit's config.
-    type Config = MyChipConfig;
+    type Config = PublicPassingChipConfig;
     type FloorPlanner = SimpleFloorPlanner;
 
     fn without_witnesses(&self) -> Self {
@@ -122,7 +122,7 @@ impl<F: FieldExt> Circuit<F> for MyCircuit {
     }
 
     fn configure(cs: &mut ConstraintSystem<F>) -> Self::Config {
-        MyChip::configure(cs)
+        PublicPassingChip::configure(cs)
     }
 
     fn synthesize(
@@ -130,7 +130,7 @@ impl<F: FieldExt> Circuit<F> for MyCircuit {
         config: Self::Config,
         mut layouter: impl Layouter<F>,
     ) -> Result<(), Error> {
-        let chip = MyChip::new(config);
+        let chip = PublicPassingChip::new(config);
         let assigned_private_cell = chip.alloc_first_input(&mut layouter)?;
         chip.alloc_second_input(&mut layouter, assigned_private_cell)?;
         Ok(())
