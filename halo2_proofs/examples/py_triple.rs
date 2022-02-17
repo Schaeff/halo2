@@ -30,6 +30,10 @@
 // rows via permutation argument, e.g. row #0 `a` == row #2 `a` is enforced within in the
 // permutation argument.
 
+// The row index of the public input. This is the only absolute index we use,
+// everything else is relative offsets within a region
+const PUB_INPUT_ROW_INDEX: usize = 1;
+
 use std::marker::PhantomData;
 
 use halo2_proofs::{
@@ -55,7 +59,6 @@ struct MyChipConfig {
     pub_col: Column<Instance>,
     s_add: Selector,
     s_mul: Selector,
-    s_pub: Selector,
 }
 
 impl<F: FieldExt> Chip<F> for MyChip<F> {
@@ -97,7 +100,6 @@ impl<F: FieldExt> MyChip<F> {
 
         let s_add = cs.selector();
         let s_mul = cs.selector();
-        let s_pub = cs.selector();
 
         // Define the addition gate.
         //
@@ -129,21 +131,6 @@ impl<F: FieldExt> MyChip<F> {
             vec![s_mul * (l * r - o)]
         });
 
-        // Define the public input gate.
-        //
-        // | l_col |  r_col  | s_pub |
-        // |-------|---------|-------|
-        // |   l   |    pi   | s_pub |
-        //
-        // Constraint: s_pub*l = s_pub*pi
-        cs.create_gate("public input", |cs| {
-            let l = cs.query_advice(l_col, Rotation::cur());
-            // Copy pi value from pub_col to r_col.
-            let pi = cs.query_advice(r_col, Rotation::cur());
-            let s_pub = cs.query_selector(s_pub);
-            vec![s_pub * (l - pi)]
-        });
-
         MyChipConfig {
             l_col,
             r_col,
@@ -151,7 +138,6 @@ impl<F: FieldExt> MyChip<F> {
             pub_col,
             s_add,
             s_mul,
-            s_pub,
         }
     }
 
@@ -187,29 +173,22 @@ impl<F: FieldExt> MyChip<F> {
         )
     }
 
-    // Writes `c` into the next available row's left column cell; enabling the `s_pub` selector
-    // enforces that `c = PI` for a PI provided by the verifier via the instance column `pub_col`.
+    // Set the left column of the next available row to the value of the instance
+    // This is not only witness generation: under the hood, it constrains the two cell to be equal
     fn alloc_public_input(
         &self,
         layouter: &mut impl Layouter<F>,
-        c: Option<F>,
     ) -> Result<AssignedCell<F, F>, Error> {
         layouter.assign_region(
             || "expose public input",
             |mut region| {
                 let row_offset = 0;
-                self.config.s_pub.enable(&mut region, row_offset)?;
-                region.assign_advice(
-                    || "public input advice",
-                    self.config.l_col,
-                    row_offset,
-                    || c.ok_or(Error::Synthesis),
-                )?;
+                // No selector is being used here
                 region.assign_advice_from_instance(
-                    || "copy pi",
+                    || "public input advice",
                     self.config.pub_col,
-                    1,
-                    self.config.r_col,
+                    PUB_INPUT_ROW_INDEX,
+                    self.config.l_col,
                     row_offset,
                 )
             },
@@ -283,8 +262,6 @@ struct MyCircuit<F> {
     // Private inputs.
     a: Option<F>,
     b: Option<F>,
-    // Public inputs (from prover).
-    c: Option<F>,
 }
 
 impl<F: FieldExt> Circuit<F> for MyCircuit<F> {
@@ -307,7 +284,7 @@ impl<F: FieldExt> Circuit<F> for MyCircuit<F> {
     ) -> Result<(), Error> {
         let chip = MyChip::new(config);
         let (a_alloc, b_alloc) = chip.alloc_private_inputs(&mut layouter, self.a, self.b)?;
-        let c_alloc = chip.alloc_public_input(&mut layouter, self.c)?;
+        let c_alloc = chip.alloc_public_input(&mut layouter)?;
         let a_sq_alloc = chip.square(&mut layouter, a_alloc)?;
         let b_sq_alloc = chip.square(&mut layouter, b_alloc)?;
         let c_sq_alloc = chip.square(&mut layouter, c_alloc)?;
@@ -318,9 +295,6 @@ impl<F: FieldExt> Circuit<F> for MyCircuit<F> {
 fn main() {
     // The number of rows utilized in the constraint system matrix.
     const N_ROWS_USED: u32 = 6;
-
-    // The row index of the public input.
-    const PUB_INPUT_ROW_INDEX: usize = 1;
 
     // The circuit's public input `c` where `a^2 + b^2 = c^2` for private inputs `a` and `b`.
     const PUB_INPUT: u64 = 5;
@@ -339,28 +313,7 @@ fn main() {
     let circuit = MyCircuit {
         a: Some(Fp::from(3)),
         b: Some(Fp::from(4)),
-        c: Some(Fp::from(PUB_INPUT)),
     };
-
-    // Create the area you want to draw on.
-    // Use SVGBackend if you want to render to .svg instead.
-    use plotters::prelude::*;
-    let root = BitMapBackend::new("layout.png", (1024, 768)).into_drawing_area();
-    root.fill(&WHITE).unwrap();
-    let root = root
-        .titled("Example Circuit Layout", ("sans-serif", 60))
-        .unwrap();
-
-    halo2_proofs::dev::CircuitLayout::default()
-        // You can optionally render only a section of the circuit.
-        // .view_width(0..2)
-        // .view_height(0..16)
-        // You can hide labels, which can be useful with smaller areas.
-        // .show_labels(false)
-        // Render the circuit onto your area!
-        // The first argument is the size parameter for the circuit.
-        .render(k, &circuit, &root)
-        .unwrap();
 
     // Assert that the constraint system is satisfied.
     let prover = MockProver::run(k, &circuit, vec![pub_inputs.clone()]).unwrap();
