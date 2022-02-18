@@ -184,6 +184,12 @@ impl<F: FieldExt> AdditionChip<F> {
     }
 }
 
+#[derive(Clone)]
+struct TwoChipConfig {
+    add_0: AdditionChipConfig,
+    add_1: AdditionChipConfig,
+}
+
 #[derive(Clone, Default)]
 struct TwoChipCircuit<F> {
     a: Option<F>,
@@ -192,8 +198,7 @@ struct TwoChipCircuit<F> {
 }
 
 impl<F: FieldExt> Circuit<F> for TwoChipCircuit<F> {
-    // Our circuit uses one chip, thus we can reuse the chip's config as the circuit's config.
-    type Config = AdditionChipConfig;
+    type Config = TwoChipConfig;
     type FloorPlanner = SimpleFloorPlanner;
 
     fn without_witnesses(&self) -> Self {
@@ -201,7 +206,10 @@ impl<F: FieldExt> Circuit<F> for TwoChipCircuit<F> {
     }
 
     fn configure(cs: &mut ConstraintSystem<F>) -> Self::Config {
-        AdditionChip::configure(cs)
+        TwoChipConfig {
+            add_0: AdditionChip::configure(cs),
+            add_1: AdditionChip::configure(cs),
+        }
     }
 
     fn synthesize(
@@ -210,7 +218,7 @@ impl<F: FieldExt> Circuit<F> for TwoChipCircuit<F> {
         mut layouter: impl Layouter<F>,
     ) -> Result<(), Error> {
         // create a first chip
-        let first_addition = AdditionChip::new(config.clone());
+        let first_addition = AdditionChip::new(config.add_0);
 
         // assign the first addition based on the first two values
         let first_addition_output =
@@ -219,7 +227,7 @@ impl<F: FieldExt> Circuit<F> for TwoChipCircuit<F> {
         // create a second addition
         // TODO: is it possible to create the chips with some parameters in order to avoid having both
         // `alloc_from_values` and `alloc_from_output_and_value` which are quite similar?
-        let second_addition = AdditionChip::new(config.clone());
+        let second_addition = AdditionChip::new(config.add_1);
 
         // assign the second addition based on the output of the first addition, and the third witness value
         second_addition.alloc_from_output_and_value(
