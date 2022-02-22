@@ -1,12 +1,11 @@
-/// Prove that private x is in the range [3, 7]
+/// Prove that private `x` is in the range [3, 7]
 ///
-/// We use a custom constraint of the form `(x - 3)(x - 4)(x - 5)(x - 6)(x - 7) == 0`
-
+/// We use a lookup of `x` in a table containing [3, 7]
 use std::marker::PhantomData;
 
 use halo2_proofs::arithmetic::FieldExt;
 use halo2_proofs::circuit::{Chip, Layouter, SimpleFloorPlanner};
-use halo2_proofs::plonk::{Advice, Circuit, Column, ConstraintSystem, Error};
+use halo2_proofs::plonk::{Advice, Circuit, Column, ConstraintSystem, Error, TableColumn};
 use halo2_proofs::poly::Rotation;
 
 use halo2_proofs::plonk::{Expression, Selector};
@@ -14,7 +13,7 @@ use halo2_proofs::plonk::{Expression, Selector};
 #[derive(Debug, Clone)]
 pub struct RangeCheckChipConfig {
     x: Column<Advice>,
-    s: Selector,
+    range_table: TableColumn,
 }
 
 #[derive(Clone)]
@@ -46,29 +45,46 @@ impl<F: FieldExt> RangeCheckChip<F> {
 
     fn configure(meta: &mut ConstraintSystem<F>) -> <Self as Chip<F>>::Config {
         let x = meta.advice_column();
-        let s = meta.selector();
+        let range_table = meta.lookup_table_column();
 
-        // create a gate of the form `selector * range_check == 0`
-        meta.create_gate("range_check", |meta| {
+        meta.lookup(|meta| {
             let x = meta.query_advice(x, Rotation::cur());
-            let s = meta.query_selector(s);
-            vec![
-                s * (3..8)
-                    .map(|i| (x.clone() - Expression::Constant(F::from(i))))
-                    .fold(Expression::Constant(F::from(1)), |acc, e| e * acc),
-            ]
+            vec![(x, range_table)]
         });
 
-        RangeCheckChipConfig { x, s }
+        RangeCheckChipConfig { x, range_table }
     }
 
-    fn assign_private_and_enforce_range_check(&self, layouter: &mut impl Layouter<F>, x: Option<F>) -> Result<(), Error> {
+    fn assign_private(&self, layouter: &mut impl Layouter<F>, x: Option<F>) -> Result<(), Error> {
         layouter.assign_region(
             || "assign x",
             |mut region| {
                 let offset = 0;
-                self.config.s.enable(&mut region, offset)?;
                 region.assign_advice(|| "x", self.config.x, offset, || x.ok_or(Error::Synthesis))
+            },
+        )?;
+        Ok(())
+    }
+
+    fn assign_table(&self, layouter: &mut impl Layouter<F>) -> Result<(), Error> {
+        layouter.assign_table(
+            || format!("range [{}, {}]", 3, 7),
+            |mut table| {
+                table.assign_cell(
+                    || "default :/",
+                    self.config.range_table,
+                    0,
+                    || Ok(F::zero()),
+                )?;
+                for (i, v) in (3..8).enumerate() {
+                    table.assign_cell(
+                        || format!("{}", v),
+                        self.config.range_table,
+                        i + 1,
+                        || Ok(F::from(v)),
+                    )?;
+                }
+                Ok(())
             },
         )?;
         Ok(())
@@ -98,7 +114,8 @@ impl<F: FieldExt> Circuit<F> for RangeCheckCircuit<F> {
         mut layouter: impl Layouter<F>,
     ) -> Result<(), Error> {
         let chip = RangeCheckChip::<F>::new(config);
-        chip.assign_private_and_enforce_range_check(&mut layouter, self.x)?;
+        chip.assign_private(&mut layouter, self.x)?;
+        chip.assign_table(&mut layouter);
         Ok(())
     }
 }
@@ -133,6 +150,13 @@ fn main() {
     // change the witness and check that it fails
     let bad_circuit = RangeCheckCircuit {
         x: Some(Fp::from(42)),
+    };
+    let verify = MockProver::run(k, &bad_circuit, vec![]).unwrap().verify();
+    assert!(verify.is_err());
+
+    // change the witness to zero and check it fails (the default value should not be accepted)
+    let bad_circuit = RangeCheckCircuit {
+        x: Some(Fp::zero()),
     };
     let verify = MockProver::run(k, &bad_circuit, vec![]).unwrap().verify();
     assert!(verify.is_err());
