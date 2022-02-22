@@ -1,5 +1,7 @@
 /// Prove that private x is in the range [3, 7]
 ///
+/// We use a custom constraint of the form `(x - 3)(x - 4)(x - 5)(x - 6)(x - 7) == 0`
+
 use std::marker::PhantomData;
 
 use halo2_proofs::arithmetic::FieldExt;
@@ -9,15 +11,12 @@ use halo2_proofs::poly::Rotation;
 
 use halo2_proofs::plonk::{Expression, Selector};
 
-/// The config for our addition circuit. It stores the two advices and the instance
-/// A selector was added because of the "cell poisoned error"
 #[derive(Debug, Clone)]
 pub struct RangeCheckChipConfig {
     x: Column<Advice>,
     s: Selector,
 }
 
-// The addition circuit with the two private inputs which we feed during witness generation
 #[derive(Clone)]
 pub struct RangeCheckChip<F> {
     config: RangeCheckChipConfig,
@@ -49,8 +48,7 @@ impl<F: FieldExt> RangeCheckChip<F> {
         let x = meta.advice_column();
         let s = meta.selector();
 
-        // we create the gate, which constrains the cells. However, we do not specify witness generation here
-        // we will do that when synthesizing
+        // create a gate of the form `selector * range_check == 0`
         meta.create_gate("range_check", |meta| {
             let x = meta.query_advice(x, Rotation::cur());
             let s = meta.query_selector(s);
@@ -64,12 +62,13 @@ impl<F: FieldExt> RangeCheckChip<F> {
         RangeCheckChipConfig { x, s }
     }
 
-    fn assign_private(&self, layouter: &mut impl Layouter<F>, x: Option<F>) -> Result<(), Error> {
+    fn assign_private_and_enforce_range_check(&self, layouter: &mut impl Layouter<F>, x: Option<F>) -> Result<(), Error> {
         layouter.assign_region(
             || "assign x",
             |mut region| {
-                self.config.s.enable(&mut region, 0)?;
-                region.assign_advice(|| "x", self.config.x, 0, || x.ok_or(Error::Synthesis))
+                let offset = 0;
+                self.config.s.enable(&mut region, offset)?;
+                region.assign_advice(|| "x", self.config.x, offset, || x.ok_or(Error::Synthesis))
             },
         )?;
         Ok(())
@@ -99,7 +98,7 @@ impl<F: FieldExt> Circuit<F> for RangeCheckCircuit<F> {
         mut layouter: impl Layouter<F>,
     ) -> Result<(), Error> {
         let chip = RangeCheckChip::<F>::new(config);
-        chip.assign_private(&mut layouter, self.x)?;
+        chip.assign_private_and_enforce_range_check(&mut layouter, self.x)?;
         Ok(())
     }
 }
@@ -115,7 +114,7 @@ fn main() {
     // create the circuit using the private inputs
     let circuit = RangeCheckCircuit { x: Some(x) };
 
-    // plot the circuit in `layout.png`
+    // plot the circuit in `range_check.png`
     use plotters::prelude::*;
     let root = BitMapBackend::new("range_check.png", (1024, 768)).into_drawing_area();
     root.fill(&WHITE).unwrap();
