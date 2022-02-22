@@ -13,6 +13,7 @@ use halo2_proofs::plonk::{Expression, Selector};
 #[derive(Debug, Clone)]
 pub struct RangeCheckChipConfig {
     x: Column<Advice>,
+    selector: Selector,
     range_table: TableColumn,
 }
 
@@ -45,14 +46,23 @@ impl<F: FieldExt> RangeCheckChip<F> {
 
     fn configure(meta: &mut ConstraintSystem<F>) -> <Self as Chip<F>>::Config {
         let x = meta.advice_column();
+        let selector = meta.complex_selector();
         let range_table = meta.lookup_table_column();
 
         meta.lookup(|meta| {
             let x = meta.query_advice(x, Rotation::cur());
-            vec![(x, range_table)]
+            let sel = meta.query_selector(selector);
+            vec![(
+                sel.clone() * x + (Expression::Constant(F::one()) - sel) * F::from(3),
+                range_table,
+            )]
         });
 
-        RangeCheckChipConfig { x, range_table }
+        RangeCheckChipConfig {
+            x,
+            range_table,
+            selector,
+        }
     }
 
     fn assign_private(&self, layouter: &mut impl Layouter<F>, x: Option<F>) -> Result<(), Error> {
@@ -60,6 +70,7 @@ impl<F: FieldExt> RangeCheckChip<F> {
             || "assign x",
             |mut region| {
                 let offset = 0;
+                self.config.selector.enable(&mut region, 0)?;
                 region.assign_advice(|| "x", self.config.x, offset, || x.ok_or(Error::Synthesis))
             },
         )?;
@@ -70,17 +81,11 @@ impl<F: FieldExt> RangeCheckChip<F> {
         layouter.assign_table(
             || format!("range [{}, {}]", 3, 7),
             |mut table| {
-                table.assign_cell(
-                    || "default :/",
-                    self.config.range_table,
-                    0,
-                    || Ok(F::zero()),
-                )?;
                 for (i, v) in (3..8).enumerate() {
                     table.assign_cell(
                         || format!("{}", v),
                         self.config.range_table,
-                        i + 1,
+                        i,
                         || Ok(F::from(v)),
                     )?;
                 }
@@ -115,7 +120,7 @@ impl<F: FieldExt> Circuit<F> for RangeCheckCircuit<F> {
     ) -> Result<(), Error> {
         let chip = RangeCheckChip::<F>::new(config);
         chip.assign_private(&mut layouter, self.x)?;
-        chip.assign_table(&mut layouter);
+        chip.assign_table(&mut layouter)?;
         Ok(())
     }
 }
@@ -131,9 +136,8 @@ fn main() {
     // create the circuit using the private inputs
     let circuit = RangeCheckCircuit { x: Some(x) };
 
-    // plot the circuit in `range_check.png`
     use plotters::prelude::*;
-    let root = BitMapBackend::new("range_check.png", (1024, 768)).into_drawing_area();
+    let root = BitMapBackend::new("lookup_range_check.png", (1024, 768)).into_drawing_area();
     root.fill(&WHITE).unwrap();
     let root = root
         .titled("Range check example Layout", ("sans-serif", 60))

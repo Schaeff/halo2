@@ -117,9 +117,8 @@ fn main() {
     // create the circuit using the private inputs
     let circuit = RangeCheckCircuit { x: Some(x) };
 
-    // plot the circuit in `range_check.png`
     use plotters::prelude::*;
-    let root = BitMapBackend::new("range_check.png", (1024, 768)).into_drawing_area();
+    let root = BitMapBackend::new("custom_range_check.png", (1024, 768)).into_drawing_area();
     root.fill(&WHITE).unwrap();
     let root = root
         .titled("Range check example Layout", ("sans-serif", 60))
